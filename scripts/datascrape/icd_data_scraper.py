@@ -274,9 +274,8 @@ def scrape_tree(urls, headers, node_id,state, base_codes, url_type="mms",parent_
         state.diagnosis_relationships_table[node_id] = merged_rels
     if len(state.diagnosis_table.keys()) % 100 == 0:
         logging.info(f"Processed {len(state.diagnosis_table.keys())} diagnoses so far, currently at type {diag_type}, node {node_id}")
-    if len(state.diagnosis_table.keys()) >= 2000:
-        return
-        
+    #if len(state.diagnosis_table.keys()) >= 1000:
+    #    return    
 
     #Recursively scrape children
     with ThreadPoolExecutor(max_workers=20) as executor:
@@ -303,38 +302,37 @@ def expand_edges(store,label):
     ]
 
 #this function turns our basic hierarchy into a proper closure table, ready for creation
-def build_closure_table(diagnosis_table,state):
+def build_closure_table(diagnosis_table, state):
     logging.debug("Building closure table from diagnosis_table")
 
     rows = []
 
-    # helper DFS
-    def dfs(parent_id, node_id, depth):
+    def dfs(ancestor_id, current_id, depth):
         rows.append({
-            "parent_id": parent_id,
-            "child_id": node_id,
-            "depth": depth
+            "parent_id": ancestor_id,
+            "child_id": current_id,
+            "depth": depth,
         })
 
-        children = diagnosis_table.get(node_id, [None, None, None, [], None])[3] or []
+        children = (
+            diagnosis_table.get(
+                current_id,
+                [None, None, None, [], None],
+            )[3]
+            or []
+        )
+
         for child_id in children:
-            dfs(parent_id, child_id, depth + 1)
+            dfs(ancestor_id, child_id, depth + 1)
 
-    # find roots (never appear as children)
-    all_children = {
-        c
-        for v in diagnosis_table.values()
-        for c in (v[3] or [])
-    }
-
-    roots = [n for n in diagnosis_table.keys() if n not in all_children]
-
-    # build closure starting from each root
-    for root in roots:
-        dfs(root, root, 0)
+    # Start DFS from EVERY node
+    for node_id in diagnosis_table.keys():
+        dfs(node_id, node_id, 0)
 
     logging.debug(
-        f"Built closure table with {len(rows)} rows from {len(diagnosis_table)} nodes"
+        "Built closure table with %s rows from %s nodes",
+        len(rows),
+        len(diagnosis_table),
     )
 
     return rows
@@ -373,22 +371,29 @@ def get_all_children(node_id,attributes_hierarchy_closure_table):
     ]
 
 
-def build_diagnosis_attributes_table(attributes_store):
+def build_diagnosis_attributes_table(attributes_hierarchy_closure_table,attributes_store, extension_mappings):
     logging.debug("Building diagnosis attributes table from attributes_store")
-    
-
+    extension_map = {}
+    for ext_type, v in extension_mappings.items():
+        mapping_ids = []
+        to_id = v.get("end_value")
+        for target_id in v.get("start_values"):
+            mapping_ids.extend(get_all_children(target_id,attributes_hierarchy_closure_table))
+        for x in mapping_ids:
+            extension_map[x] = {"to_id":to_id,"extension_type":ext_type}
     rows = []
     for icd_id, attrs in attributes_store.items():
         for attr, v in attrs.items():
             for option in v.get("options", []):
-                rows.append({
-                    "icd_id": icd_id,
-                    "attribute": attr,
-                    "required": v.get("required"),
-                    "allow_multiple": v.get("allow_multiple"),
-                    "option": option
-                })
-
+                if option in extension_map.keys():
+                    rows.append({
+                        "icd_id_id": icd_id,
+                        "allowed_value_id": extension_map[option].get("to_id"),
+                        "attribute": extension_map[option].get("extension_type"),
+                        "allow_multiple": v.get("allow_multiple"),
+                    })
+    print(len(attributes_store.keys()))
+    return rows
 
 
 def create_diagnoses_tables(state, base_codes):
@@ -439,7 +444,7 @@ def create_attributes_tables(state,base_codes,extension_mappings):
         for k, v in true_attributes.items()
     }
     attributes_hierarchy_closure_table = build_closure_table(true_attributes,state)
-    diagnisis_attributes_table = build_diagnosis_attributes_table(state.diagnosis_attributes_table)
+    diagnisis_attributes_table = build_diagnosis_attributes_table(attributes_hierarchy_closure_table,state.diagnosis_attributes_table, extension_mappings)
 
     return {
         "attributes": attributes_table,
