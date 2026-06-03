@@ -94,15 +94,21 @@ def url_splitter(url_list):
         url_list = [url_list]
 
     result = []
+    result_seen = set()
 
     for url in url_list:
         #Split the url, take either just the last part (the diagnosis code) or the last 2 parts (diagnosis/other)
         node_id = url.split("/")[-1] if url.split("/")[-1].isdigit() else "/".join(url.split("/")[-2:])
         #Save the diagnosis code and save what type of url it came from (mms and entity urls contain different info)
         if "mms" in url:
-            result.append((node_id, "mms"))
+            item = (node_id, "mms")
         elif "entity" in url:
-            result.append((node_id, "entity"))
+            item = (node_id, "entity")
+        else:
+            continue
+        if item not in result_seen:
+            result_seen.add(item)
+            result.append(item)
     return result
 
 
@@ -197,27 +203,30 @@ def merge_from_parent(parent, child):
     if not parent:
         return child
 
+    result = dict(child)  # IMPORTANT: work on a fresh copy
+
     for k, pv in parent.items():
-        cv = child.get(k)
+        cv = result.get(k)
 
         if cv is None:
-            child[k] = pv
+            result[k] = pv
 
         elif isinstance(pv, bool) and isinstance(cv, bool):
-            child[k] = cv or pv
+            result[k] = cv or pv
 
         elif isinstance(pv, list) and isinstance(cv, list):
-            # preserves order, removes duplicates
-            dseen = set()
+            seen = set()
             merged = []
-            for x in cv + pv:
-                if x not in dseen:
-                    dseen.add(x)
+
+            for x in pv + cv:
+                if x not in seen:
+                    seen.add(x)
                     merged.append(x)
-            child[k] = merged
+
+            result[k] = merged
 
         elif isinstance(pv, dict) and isinstance(cv, dict):
-            child[k] = merge_from_parent(pv, cv)
+            result[k] = merge_from_parent(pv, cv)
 
         else:
             logging.error(
@@ -226,7 +235,7 @@ def merge_from_parent(parent, child):
             )
             raise TypeError(f"conflicting types for key {k}")
 
-    return child
+    return result
 
 
 #Splits the attribute data into relationships (links between diagnoses) and attributes (elements of a diagnosis)
@@ -291,26 +300,17 @@ def scrape_tree(urls, headers, node_id,state, base_codes, url_type="mms",parent_
                 #scrape_tree(urls, headers, child_id, state, base_codes, url_type, node_id, diag_type)
 
 
-
-#This function explodes any lists we have before we write to tsv
-def expand_edges(store,label):
-    return [
-        (icd_id, attr, v["required"], v["allow_multiple"], option)
-        for icd_id, attrs in store.items()
-        for attr, v in attrs.items()
-        for option in v.get("options", [])
-    ]
-
 #this function turns our basic hierarchy into a proper closure table, ready for creation
-def build_closure_table(diagnosis_table, state):
+def build_closure_table(diagnosis_table,table_type):
     logging.debug("Building closure table from diagnosis_table")
 
     rows = []
-
+    ancestor = table_type + "_ancestor"
+    descendant = table_type + "_descendant"
     def dfs(ancestor_id, current_id, depth):
         rows.append({
-            "parent_id": ancestor_id,
-            "child_id": current_id,
+            ancestor: ancestor_id,
+            descendant: current_id,
             "depth": depth,
         })
 
@@ -338,7 +338,7 @@ def build_closure_table(diagnosis_table, state):
     return rows
 
 
-def build_relationships_table(relationships_store, base_codes):
+def build_relationships_table(relationships_store, base_codes, valid_ids):
     logging.debug("Building relationships table from relationships_store")
 
     rows = []
@@ -348,11 +348,13 @@ def build_relationships_table(relationships_store, base_codes):
             for option in v.get("options", []):
                 if option in base_codes.keys():
                     continue
+                if icd_id not in valid_ids or option not in valid_ids:
+                    continue
                 rows.append({
                     "from_diagnosis_id": icd_id,
                     "to_diagnosis_id": option,
-                    "relationship": rel,
-                    "required": v.get("required"),
+                    "relationship_type": rel,
+                    "is_required": v.get("required"),
                     "allow_multiple": v.get("allow_multiple"),
                 })
 
@@ -365,9 +367,9 @@ def build_relationships_table(relationships_store, base_codes):
 
 def get_all_children(node_id,attributes_hierarchy_closure_table):
     return [
-        row["child_id"]
+        row["attributes_descendant"]
         for row in attributes_hierarchy_closure_table
-        if row["parent_id"] == node_id
+        if row["attributes_ancestor"] == node_id
     ]
 
 
@@ -382,16 +384,26 @@ def build_diagnosis_attributes_table(attributes_hierarchy_closure_table,attribut
         for x in mapping_ids:
             extension_map[x] = {"to_id":to_id,"extension_type":ext_type}
     rows = []
+    seen_rows = ()
     for icd_id, attrs in attributes_store.items():
         for attr, v in attrs.items():
             for option in v.get("options", []):
-                if option in extension_map.keys():
-                    rows.append({
-                        "icd_id_id": icd_id,
-                        "allowed_value_id": extension_map[option].get("to_id"),
-                        "attribute": extension_map[option].get("extension_type"),
-                        "allow_multiple": v.get("allow_multiple"),
-                    })
+                if option not in extension_map:
+                    continue
+                row = (
+                        icd_id,
+                        extension_map[option].get("to_id"),
+                        extension_map[option].get("extension_type"),
+                        v.get("allow_multiple")
+                    )
+                if row in seen_rows:
+                    continue
+                rows.append({
+                    "diagnosis_id": icd_id,
+                    "attribute_id": extension_map[option].get("to_id"),
+                    "attribute_type": extension_map[option].get("extension_type"),
+                    "allow_multiple": v.get("allow_multiple"),
+                })
     print(len(attributes_store.keys()))
     return rows
 
@@ -403,24 +415,28 @@ def create_diagnoses_tables(state, base_codes):
         for node_id, v in state.diagnosis_table.items()
         if v[2] == "diagnosis"
     }
+    valid_ids = set(true_diagnoses.keys())
+
+    for node_id, v in true_diagnoses.items():
+        v[3] = [x for x in v[3] if x in valid_ids]
     diagnosis_table = {
         k: {
             "name": v[0],
-            "code": v[1]
+            "icd_11_code": v[1]
         }
         for k, v in true_diagnoses.items()
     }
-    diagnosis_hierarchy_closure_table = build_closure_table(true_diagnoses,state)
+    diagnosis_hierarchy_closure_table = build_closure_table(true_diagnoses,"diagnosis")
     diagnosis_synonyms_table = {
         k: {
-            "synonyms": v[4],
-            "lang": "en"
+            "synonym": v[4],
+            "language": "en"
             
         }
         for k, v in true_diagnoses.items()
         if v[4]
     }
-    diagnosis_relationships_table = build_relationships_table(state.diagnosis_relationships_table,base_codes)
+    diagnosis_relationships_table = build_relationships_table(state.diagnosis_relationships_table,base_codes,valid_ids)
 
     return {
         "diagnosis": diagnosis_table,
@@ -439,11 +455,11 @@ def create_attributes_tables(state,base_codes,extension_mappings):
     attributes_table = {
         k: {
             "name": v[0],
-            "code": v[1]
+            "icd_11_code": v[1]
         }
         for k, v in true_attributes.items()
     }
-    attributes_hierarchy_closure_table = build_closure_table(true_attributes,state)
+    attributes_hierarchy_closure_table = build_closure_table(true_attributes,"attributes")
     diagnisis_attributes_table = build_diagnosis_attributes_table(attributes_hierarchy_closure_table,state.diagnosis_attributes_table, extension_mappings)
 
     return {
@@ -451,6 +467,15 @@ def create_attributes_tables(state,base_codes,extension_mappings):
         "closure": attributes_hierarchy_closure_table,
         "diagnosis_attributes": diagnisis_attributes_table
     }
+
+
+#This function explodes any lists we have before we write to tsv
+def explode_list_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # repeatedly explode any column containing lists
+    for col in df.columns:
+        if df[col].apply(lambda x: isinstance(x, list)).any():
+            df = df.explode(col, ignore_index=True)
+    return df
 
 
 def export_to_tsv(all_tables, out_path):
@@ -479,8 +504,9 @@ def export_to_tsv(all_tables, out_path):
 
             # dict of dicts (diagnosis, attributes, synonyms)
             elif isinstance(data, dict):
+                key_name = "diagnosis_id" if table_name == "synonyms" else "icd_11_id"
                 df = pd.DataFrame([
-                    {"node_id": k, **v}
+                    {key_name: k, **v}
                     for k, v in data.items()
                 ])
 
@@ -488,6 +514,7 @@ def export_to_tsv(all_tables, out_path):
                 raise ValueError(
                     f"Unsupported format for {group_name}.{table_name}: {type(data)}"
                 )
+            df = explode_list_columns(df)
             logging.info(f"Exporting {len(df)} rows to {file_path}")
             df.to_csv(file_path, sep="\t", index=False)
 

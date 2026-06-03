@@ -76,9 +76,9 @@ database:
   postgres:
     host: "localhost"
     port: 5432
-    dbname: "icd_db"
-    user: "postgres"
-    password: "your_password"
+    dbname: "felix"
+    user: "felix"
+    password: "hersenbank"
 
   mode: rebuild 
-  input_dir: "../../data/icd_11_2026_01/"
+  input_dir: "data/icd_11_2026_01/"
