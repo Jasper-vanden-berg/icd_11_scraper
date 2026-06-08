@@ -9,7 +9,7 @@ CREATE TABLE diagnosis.diagnosis_attributes (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     diagnosis_id BIGINT NOT NULL,
     attribute_id BIGINT NOT NULL,
-    attribute_type VARCHAR(255) NOT NULL,
+    is_required BOOLEAN NOT NULL,
 
     -- Add relationships
     CONSTRAINT fk_attributes_diagnosis_id

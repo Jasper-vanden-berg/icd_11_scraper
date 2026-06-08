@@ -7,8 +7,7 @@ scraper:
     grant_type: "client_credentials"
   scrape_settings:
       main_ancestor_id : "455013390"
-      main_ancestor_child_type: "entity"
-      #main_ancestor_id: "979408586"
+      #main_ancestor_id: "334423054"
       #main_ancestor_child_type: "entity"
       urls: ["https://id.who.int/icd/release/11/2026-01/mms/","https://id.who.int/icd/entity/"]
       out_dir: "data/icd_11_2026_01/"
