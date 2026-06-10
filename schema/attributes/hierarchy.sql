@@ -27,10 +27,10 @@ CREATE TABLE diagnosis.attributes_hierarchy (
 
 -- Add index(es)
 CREATE INDEX idx_attributes_hierarchy_ancestor
-ON diagnosis.diagnosis_hierarchy(ancestor_id);
+ON diagnosis.attributes_hierarchy(ancestor_id);
 
 CREATE INDEX idx_attributes_hierarchy_descendant
-ON diagnosis.diagnosis_hierarchy(descendant_id);
+ON diagnosis.attributes_hierarchy(descendant_id);
 
 CREATE INDEX idx_attributes_hierarchy_depth
-ON diagnosis.diagnosis_hierarchy(depth);
+ON diagnosis.attributes_hierarchy(depth);

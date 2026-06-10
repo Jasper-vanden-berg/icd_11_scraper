@@ -25,7 +25,6 @@ def get_connection(db_config):
 def run_sql_file(conn, path: Path):
     with open(path, "r") as f:
         sql = f.read()
-
     with conn.cursor() as cur:
         cur.execute(sql)
 
@@ -40,7 +39,7 @@ def load_schemas(conn, schema_root: Path):
             run_sql_file(conn, sql_table)
 
     for sql_file in schema_root.rglob("*.sql"):
-        if any(sql_file.match(schema_root / p) for p in prio):
+        if any(sql_file.match(str(schema_root / p)) for p in prio):
             continue
         logging.info(f"Applying schema2: {sql_file}")
         run_sql_file(conn, sql_file)
